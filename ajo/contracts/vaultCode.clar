@@ -1,5 +1,5 @@
-;; Token Vesting Scheduler 
-;; Vesting system with enhanced security and tracking
+;; Token Vesting Scheduler
+;; A blockchain-based token vesting system with sequential release schedules and claim verification
 
 ;; Constants
 (define-constant ERR-NOT-TREASURY-MANAGER (err u1))
@@ -11,7 +11,7 @@
 (define-constant ERR-INSUFFICIENT-ALLOCATION (err u7))
 (define-constant ERR-INVALID-PARAMETER (err u8))
 (define-constant ERR-SCHEDULE-EXISTS (err u9))
-(define-constant MAX-SCHEDULE-ID u100)
+(define-constant MAX-SCHEDULE-ID u100) ;; Maximum allowed schedule ID
 
 ;; Data Variables
 (define-data-var treasury-manager principal tx-sender)
@@ -19,15 +19,15 @@
 (define-data-var current-distribution uint u0)
 (define-data-var kyc-verification-fee uint u1000000) ;; 1 STX
 (define-data-var total-allocation uint u0)
-(define-data-var current-epoch uint u0)
+(define-data-var current-epoch uint u0) ;; Epoch tracking for vesting periods
 
 ;; Schedule Structure
 (define-map vesting-schedules
     uint
     {
         description: (string-utf8 256),
-        identity-proof: (buff 32), ;; SHA256 hash for verification
-        unlock-epoch: uint,
+        identity-proof: (buff 32), ;; SHA256 hash of the expected identity verification
+        unlock-epoch: uint,        ;; Unlock epoch for the vesting period
         token-amount: uint,
         claimed: bool
     }
@@ -53,6 +53,12 @@
     }
 )
 
+;; Events
+(define-map claim-events
+    uint
+    (list 10 {beneficiary: principal, claimed-at: uint})
+)
+
 ;; Authorization
 (define-private (is-manager)
     (is-eq tx-sender (var-get treasury-manager)))
@@ -61,6 +67,7 @@
 (define-public (update-epoch (new-epoch uint))
     (begin
         (asserts! (is-manager) ERR-NOT-TREASURY-MANAGER)
+        ;; Validate epoch is not in the past
         (asserts! (>= new-epoch (var-get current-epoch)) ERR-INVALID-PARAMETER)
         (var-set current-epoch new-epoch)
         (ok true)))
@@ -177,6 +184,16 @@
                 ;; Transfer tokens
                 (try! (stx-transfer? (get token-amount schedule) (var-get treasury-manager) tx-sender))
                 
+                ;; Record event
+                (match (map-get? claim-events schedule-id)
+                    events (map-set claim-events schedule-id
+                        (unwrap! (as-max-len?
+                            (append events {beneficiary: tx-sender, claimed-at: current-time})
+                            u10)
+                            ERR-INVALID-SCHEDULE))
+                    (map-set claim-events schedule-id
+                        (list {beneficiary: tx-sender, claimed-at: current-time})))
+                
                 (ok true))
             ERR-WRONG-IDENTITY-PROOF)))
 
@@ -190,6 +207,9 @@
 
 (define-read-only (get-beneficiary-status (beneficiary principal))
     (map-get? beneficiary-records beneficiary))
+
+(define-read-only (get-claim-events (schedule-id uint))
+    (map-get? claim-events schedule-id))
 
 (define-read-only (get-current-epoch)
     (var-get current-epoch))
